@@ -1,0 +1,5 @@
+brisi*
+.snakemake
+__pycache__
+output/
+.lprof

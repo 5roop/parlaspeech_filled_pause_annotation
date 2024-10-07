@@ -4,9 +4,9 @@ try:
     directory = snakemake.wildcards.directory
     batchsize = int(snakemake.params.batchsize)
 except NameError:
-    input_dir = "/cache/nikolal/parlaspeech-rs/audio/RNZfu5w2DuE/"
+    input_dir = "/cache/nikolal/parlaspeech-rs/audio/oN2c-uF4srI/"
     output_file = "brisi.jsonl"
-    directory = "RNZfu5w2DuE"
+    directory = "oN2c-uF4srI"
     batchsize = 1
 from transformers import AutoFeatureExtractor, Wav2Vec2BertForAudioFrameClassification
 from datasets import load_dataset, Dataset, Audio
@@ -25,9 +25,9 @@ from pathlib import Path
 import gc
 
 
-wavs = Path(input_dir).glob("*.mp3")
+mp3s = Path(input_dir).glob("*.mp3")
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 device = torch.device("cuda")
 
 from utils import frames_to_intervals
@@ -44,20 +44,25 @@ model = Wav2Vec2BertForAudioFrameClassification.from_pretrained(str(checkpoint))
 
 def evaluator(chunks):
     if isinstance(chunks, datasets.formatting.formatting.LazyRow):
-        # We are dealing with a single chunk:
-        sampling_rate = chunks["audio"]["sampling_rate"]
-        with torch.no_grad():
-            inputs = feature_extractor(
-                chunks["audio"]["array"],
-                return_tensors="pt",
-                sampling_rate=sampling_rate,
-            ).to(device)
-            logits = model(**inputs).logits
+        try:
+            # We are dealing with a single chunk:
+            sampling_rate = chunks["audio"]["sampling_rate"]
+            with torch.no_grad():
+                inputs = feature_extractor(
+                    chunks["audio"]["array"],
+                    return_tensors="pt",
+                    sampling_rate=sampling_rate,
+                ).to(device)
+                logits = model(**inputs).logits
+                torch.cuda.empty_cache()
+            y_pred = np.array(logits.cpu()).argmax(axis=-1)
             torch.cuda.empty_cache()
-        y_pred = np.array(logits.cpu()).argmax(axis=-1)
-        torch.cuda.empty_cache()
-        gc.collect()
-        return {"y_pred": frames_to_intervals(y_pred[0].tolist())}
+            gc.collect()
+            return {"y_pred": frames_to_intervals(y_pred[0].tolist())}
+        except KeyboardInterrupt as e:
+            raise e
+        except:
+            return {"y_pred": None}
     else:
         sampling_rate = chunks["audio"][0]["sampling_rate"]
         with torch.no_grad():
@@ -74,13 +79,19 @@ def evaluator(chunks):
         return {"y_pred": [frames_to_intervals(i) for i in y_pred]}
 
 
-df = pd.DataFrame(data={"audio": [i for i in wavs]})
+def get_start_end(s: str):
+    s = str(Path(s).name)[12:].replace(".mp3", "")
+    s, e = s.split("-")
+    return float(s), float(e)
+
+
+df = pd.DataFrame(data={"audio": [i for i in mp3s]})
 df["name"] = df.audio.apply(lambda p: p.name)
 df["path"] = df.audio.apply(lambda p: str(p))
-df["start"] = df.name.str.split("_").str[1].str.split("-").str[0].astype(float)
-df["end"] = df.name.str.split("_").str[1].str.split("-").str[1].str.replace(".mp3", "").astype(float)
+df["start"] = [get_start_end(i)[0] for i in df.name.values]
+df["end"] = [get_start_end(i)[1] for i in df.name.values]
 df["duration"] = df.end - df.start
-df = df[df.duration <= 30]
+df = df[(df.duration <= 30) & (df.duration > 0)]
 df = df.drop_duplicates(subset="name").reset_index()
 df["audio"] = df.audio.apply(str)
 df = df.drop(columns="name")
@@ -111,6 +122,6 @@ for i in range(7):
         gc.collect()
         continue
 df["y_pred"] = [i for i in ds["y_pred"]]
-df.drop(columns="audio").to_json(
+df.drop(columns="audio start end duration".split()).to_json(
     output_file, orient="records", lines=True, index=False, force_ascii=False
 )
